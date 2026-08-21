@@ -35,7 +35,6 @@ app.post('/api/check-whitelist', async (req, res) => {
     const { userId, username } = req.body;
     if (!userId) return res.status(400).json({ allowed: false });
 
-    // Si ya está denegado, le mandamos la señal limpia al juego
     if (denegados.has(String(userId))) {
         return res.json({ allowed: false, denied: true });
     }
@@ -51,15 +50,15 @@ app.post('/api/check-whitelist', async (req, res) => {
             notificados.delete(String(userId));
             return res.json({ allowed: true });
         } else {
-            // Si ya fue notificado recientemente, solo respondemos false sin volver a enviar spam a Discord
-            if (notificados.has(String(userId))) {
-                return res.json({ allowed: false, denied: false });
+            const ahora = Date.now();
+            const ultimoEnvio = notificados.get(String(userId)) || 0;
+            
+            // Si ya pasaron 12 segundos desde la última alerta de este usuario, mandamos otra y renovamos el tiempo
+            if (ahora - ultimoEnvio > 12000) {
+                notificados.set(String(userId), ahora);
+                await enviarAlertaBotDiscord(userId, username);
             }
-
-            // Marcamos como notificado y enviamos el embed una sola vez
-            notificados.set(String(userId), true);
-            await enviarAlertaBotDiscord(userId, username);
-
+            
             return res.json({ allowed: false, denied: false });
         }
     } catch (error) {
@@ -67,7 +66,6 @@ app.post('/api/check-whitelist', async (req, res) => {
         res.status(500).json({ allowed: false });
     }
 });
-
 // Endpoint cuando el usuario sale del script
 app.post('/api/leave-script', (req, res) => {
     const { userId } = req.body;
