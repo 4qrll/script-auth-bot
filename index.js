@@ -26,20 +26,20 @@ client.once('ready', () => {
 client.login(DISCORD_TOKEN);
 
 // Estructuras de control
-const notificados = new Map(); // Guardará el timestamp de la última notificación por usuario
+const notificados = new Map();
 const denegados = new Set();
 const approvedHistory = [];
+const activeSessions = new Map(); // Guarda las sesiones activas en tiempo real: userId -> { username, horaOpen, timestampOpen }
+const logsHistorial = []; // Almacena el historial completo de logs
 
-// 1. Endpoint que consulta Roblox
+// 1. Endpoint que consulta Roblox (Whitelist)
 app.post('/api/check-whitelist', async (req, res) => {
     const { userId, username } = req.body;
     if (!userId) return res.status(400).json({ allowed: false });
 
     const stringUserId = String(userId);
 
-    // Si está denegado explícitamente, le avisamos al juego que cierre la UI una sola vez
     if (denegados.has(stringUserId)) {
-        // Opcional: limpiamos el estado de denegado para que si vuelve a ejecutar el script en el futuro, pueda reintentar
         denegados.delete(stringUserId);
         notificados.delete(stringUserId);
         return res.json({ allowed: false, denied: true });
@@ -52,18 +52,15 @@ app.post('/api/check-whitelist', async (req, res) => {
         
         const whitelist = binRes.data.record.whitelist || [];
 
-        // Si está en la whitelist, se le da acceso
         if (whitelist.includes(Number(userId)) || whitelist.includes(stringUserId)) {
             notificados.delete(stringUserId);
             denegados.delete(stringUserId);
             return res.json({ allowed: true });
         } else {
-            // Si ya se le envió la alerta a Discord antes, NO la volvemos a enviar (evitamos spam)
             if (notificados.has(stringUserId)) {
                 return res.json({ allowed: false, denied: false });
             }
 
-            // Marcamos como notificado y enviamos el embed a Discord UNA SOLA VEZ
             notificados.set(stringUserId, true);
             await enviarAlertaBotDiscord(userId, username);
 
@@ -74,6 +71,55 @@ app.post('/api/check-whitelist', async (req, res) => {
         res.status(500).json({ allowed: false });
     }
 });
+
+// 2. Endpoint para registrar apertura y cierre de sesiones (Logs con nuevo formato)
+app.post('/api/log-sesion', (req, res) => {
+    const { userId, username, tipo, hora } = req.body;
+    if (!userId) return res.status(400).json({ success: false });
+
+    const stringUserId = String(userId);
+
+    if (tipo === 'open') {
+        activeSessions.set(stringUserId, {
+            userId: stringUserId,
+            username: username || "Desconocido",
+            horaOpen: hora,
+            timestampOpen: Date.now()
+        });
+        console.log(`[LOG OPEN] ID: ${stringUserId} | User: ${username} \vert{} Hora:${hora}`);
+    } else if (tipo === 'close') {
+        const session = activeSessions.get(stringUserId);
+        const horaOpen = session ? session.horaOpen : "Desconocida";
+        
+        // Calcular tiempo transcurrido en horas (ej: 1.3h) o minutos
+        let tiempoTexto = "0m";
+        if (session) {
+            const diffMs = Date.now() - session.timestampOpen;
+            const diffMins = Math.floor(diffMs / 60000);
+            if (diffMins >= 60) {
+                const horas = (diffMins / 60).toFixed(1);
+                tiempoTexto = `${horas}h`;
+            } else {
+                tiempoTexto = `${diffMins}m`;
+            }
+        }
+
+        // Guardar en el historial con el nuevo formato solicitado
+        logsHistorial.push({
+            userId: stringUserId,
+            username: username || (session ? session.username : "Desconocido"),
+            openTime: horaOpen,
+            closeTime: hora,
+            timeSpent: tiempoTexto
+        });
+
+        activeSessions.delete(stringUserId);
+        console.log(`[LOG CLOSE] ID: ${stringUserId} \vert{} User:${username} | Cierre: ${hora} \vert{} Time:${tiempoTexto}`);
+    }
+
+    res.json({ success: true });
+});
+
 // Endpoint cuando el usuario sale del script
 app.post('/api/leave-script', (req, res) => {
     const { userId } = req.body;
@@ -122,180 +168,11 @@ client.on('messageCreate', async message => {
     const args = message.content.slice(1).trim().split(/ +/);
     const command = args.shift().toLowerCase();
 
-    if (command === 'quitar') {
-        try {
-            const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
-                headers: { 'X-Master-Key': JSONBIN_KEY }
-            });
-            
-            const whitelist = binRes.data.record.whitelist || [];
-
-            if (whitelist.length === 0) {
-                return message.reply("📂 La whitelist está vacía actualmente, no hay nadie para quitar.");
-            }
-
-            let descripcion = "Haz clic en el botón rojo correspondiente al usuario que deseas **eliminar** de la whitelist:\n\n";
-            const components = [];
-            let currentRow = new ActionRowBuilder();
-
-            for (let i = 0; i < whitelist.length && i < 25; i++) {
-                const uid = String(whitelist[i]);
-                descripcion += `**${i + 1}.** UserId: \`${uid}\`\n`;
-
-                currentRow.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`remove_${uid}`)
-                        .setLabel(`Quitar #${i + 1}`)
-                        .setStyle(ButtonStyle.Danger)
-                );
-
-                if (currentRow.components.length === 5 || i === whitelist.length - 1) {
-                    components.push(currentRow);
-                    currentRow = new ActionRowBuilder();
-                }
-            }
-
-            const embed = new EmbedBuilder()
-                .setTitle("🗑️ Gestión de Whitelist - Eliminar Usuarios")
-                .setDescription(descripcion)
-                .setColor(0xE74C3C)
-                .setTimestamp();
-
-            message.reply({ embeds: [embed], components: components });
-        } catch (error) {
-            console.error(error);
-            message.reply("❌ Hubo un error al obtener la lista de usuarios.");
+    if (command === 'logs') {
+        if (logsHistorial.length === 0) {
+            return message.reply("📂 No hay registros de sesiones cerradas todavía.");
         }
-    }
 
-    if (command === 'lista') {
-        try {
-            const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
-                headers: { 'X-Master-Key': JSONBIN_KEY }
-            });
-            
-            const whitelist = binRes.data.record.whitelist || [];
-
-            if (whitelist.length === 0) {
-                return message.reply("📂 La whitelist está vacía actualmente.");
-            }
-
-            let descripcion = "";
-            for (let i = 0; i < whitelist.length; i++) {
-                descripcion += `**${i + 1}.** UserId: \`${whitelist[i]}\`\n`;
-            }
-
-            const embedLista = new EmbedBuilder()
-                .setTitle("📋 Usuarios Registrados en la Whitelist")
-                .setDescription(descripcion)
-                .setColor(0x3498DB)
-                .setTimestamp();
-
-            message.reply({ embeds: [embedLista] });
-        } catch (error) {
-            console.error(error);
-            message.reply("❌ Hubo un error al obtener la lista.");
-        }
-    }
-
-    if (command === 'solicitudes') {
-        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-        const recent = approvedHistory.filter(item => item.timestamp >= thirtyDaysAgo);
-
-        const embed = new EmbedBuilder()
-            .setTitle('📋 Solicitudes Aprobadas (Últimos 30 días)')
-            .setColor(0x3498DB)
-            .setDescription(recent.length > 0 ? recent.map(r => `• UserId: \`${r.userId}\` - Aprobado por: ${r.approvedBy}`).join('\n') : 'No hay solicitudes aprobadas en este periodo.')
-            .setTimestamp();
-
-        message.reply({ embeds: [embed] });
-    }
-});
-
-// Manejador de Clics en los Botones de Discord
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton()) return;
-
-    const [action, userId] = interaction.customId.split('_');
-
-    if (action === 'approve') {
-        try {
-            const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
-                headers: { 'X-Master-Key': JSONBIN_KEY }
-            });
-            
-            let whitelist = binRes.data.record.whitelist || [];
-            if (!whitelist.includes(userId) && !whitelist.includes(Number(userId))) {
-                whitelist.push(userId);
-                await axios.put(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, { whitelist }, {
-                    headers: { 'X-Master-Key': JSONBIN_KEY, 'Content-Type': 'application/json' }
-                });
-            }
-
-            denegados.delete(userId);
-            notificados.delete(userId);
-
-            approvedHistory.push({
-                userId,
-                approvedBy: interaction.user.tag,
-                timestamp: Date.now()
-            });
-
-            const updatedEmbed = new EmbedBuilder()
-                .setTitle("✅ Solicitud Aprobada")
-                .setColor(0x2ECC71)
-                .addFields(
-                    { name: "UserId Aprobado", value: userId, inline: true },
-                    { name: "Aprobado por", value: interaction.user.tag, inline: true }
-                );
-
-            await interaction.update({ embeds: [updatedEmbed], components: [] });
-        } catch (error) {
-            await interaction.reply({ content: "Hubo un error al guardar en la base de datos.", ephemeral: true });
-        }
-    } 
-    else if (action === 'deny') {
-        denegados.add(userId);
-        notificados.delete(userId);
-
-        const updatedEmbed = new EmbedBuilder()
-            .setTitle("❌ Solicitud Denegada")
-            .setColor(0xE74C3C)
-            .addFields(
-                { name: "UserId Denegado", value: userId, inline: true },
-                { name: "Denegado por", value: interaction.user.tag, inline: true }
-            );
-
-        await interaction.update({ embeds: [updatedEmbed], components: [] });
-    }
-    else if (action === 'remove') {
-        try {
-            const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
-                headers: { 'X-Master-Key': JSONBIN_KEY }
-            });
-            
-            let whitelist = binRes.data.record.whitelist || [];
-            const nuevaWhitelist = whitelist.filter(id => String(id) !== String(userId));
-
-            await axios.put(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, { whitelist: nuevaWhitelist }, {
-                headers: { 'X-Master-Key': JSONBIN_KEY, 'Content-Type': 'application/json' }
-            });
-
-            denegados.delete(userId);
-            notificados.delete(userId);
-
-            const updatedEmbed = new EmbedBuilder()
-                .setTitle("🗑️ Usuario Eliminado de la Whitelist")
-                .setDescription(`El usuario con UserId \`${userId}\` ha sido eliminado correctamente.`)
-                .setColor(0x95A5A6);
-
-            await interaction.update({ embeds: [updatedEmbed], components: [] });
-        } catch (error) {
-            await interaction.reply({ content: "Hubo un error al eliminar al usuario.", ephemeral: true });
-        }
-    }
-});
-
-app.listen(PORT, () => {
-    console.log(`Servidor Express corriendo en el puerto ${PORT}`);
-});
+        let textoLogs = "📜 **Historial de Sesiones:**\n```text\n";
+        logsHistorial.forEach(log => {
+            textoLogs += `${log.userId} id \vert{}${log.username} user | ${log.openTime} : open \vert{}${log.closeTime} : close |
