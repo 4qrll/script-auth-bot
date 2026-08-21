@@ -1,13 +1,14 @@
 {
-  "name": "auth-server",
+  "name": "script-auth-bot",
   "version": "1.0.0",
-  "description": "Servidor de Whitelist para Script",
+  "description": "Whitelist bot con botones interactivos",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "express": "^4.18.2"
+    "axios": "^1.6.8",
+    "discord.js": "^14.14.1",
+    "express": "^4.19.2"
   }
 }
