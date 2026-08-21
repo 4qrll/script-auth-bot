@@ -130,7 +130,6 @@ app.post('/api/log-sesion', async (req, res) => {
             timeSpent: tiempoTexto
         };
 
-        // Guardar de forma persistente en JsonBin
         const record = await obtenerDatosBin();
         record.logsHistorial = record.logsHistorial || [];
         record.logsHistorial.push(nuevoLog);
@@ -190,6 +189,26 @@ client.on('messageCreate', async message => {
 
     const args = message.content.slice(1).trim().split(/ +/);
     const command = args.shift().toLowerCase();
+
+    // NUEVO COMANDO PURGE
+    if (command === 'purge' || command === 'borrar') {
+        const cantidad = parseInt(args[0]);
+
+        if (isNaN(cantidad) || cantidad <= 0 || cantidad > 100) {
+            return message.reply("❌ Por favor, indica un número válido de mensajes a eliminar (entre 1 y 100). Ej: `,purge 50`");
+        }
+
+        try {
+            // Borrar el comando ejecutado y los mensajes solicitados (máximo 100 por limitación de Discord API en bulkDelete)
+            await message.channel.bulkDelete(cantidad + 1, true);
+            
+            const confirmMsg = await message.channel.send(`🧹 Se han eliminado **${cantidad}** mensajes correctamente.`);
+            setTimeout(() => confirmMsg.delete().catch(() => {}), 4000); // Borra el mensaje de aviso tras 4 segundos
+        } catch (error) {
+            console.error(error);
+            return message.reply("❌ Hubo un error al intentar borrar los mensajes. (Recuerda que Discord no permite borrar mensajes de más de 14 días de antigüedad de forma masiva).");
+        }
+    }
 
     if (command === 'logs') {
         try {
@@ -367,7 +386,7 @@ client.on('interactionCreate', async interaction => {
 
             await interaction.update({ embeds: [updatedEmbed], components: [] });
         } catch (error) {
-            await interaction.reply({ content: "Hubo un server error al eliminar al usuario.", ephemeral: true });
+            await interaction.reply({ content: "Hubo un error al eliminar al usuario.", ephemeral: true });
         }
     }
 });
