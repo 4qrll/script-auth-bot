@@ -27,6 +27,8 @@ client.login(DISCORD_TOKEN);
 
 const notificados = new Set();
 const denegados = new Set();
+const activeUsers = new Set();
+const approvedHistory = []; // Historial para el comando de 30 días
 
 // 1. Endpoint que consulta Roblox
 app.post('/api/check-whitelist', async (req, res) => {
@@ -45,6 +47,7 @@ app.post('/api/check-whitelist', async (req, res) => {
         const whitelist = binRes.data.record.whitelist || [];
 
         if (whitelist.includes(Number(userId)) || whitelist.includes(String(userId))) {
+            activeUsers.add(String(userId));
             return res.json({ allowed: true });
         } else {
             if (!notificados.has(String(userId))) {
@@ -57,6 +60,16 @@ app.post('/api/check-whitelist', async (req, res) => {
         console.error("Error:", error);
         res.status(500).json({ allowed: false });
     }
+});
+
+// Endpoint para registrar cuando el usuario sale o presiona N
+app.post('/api/leave-script', (req, res) => {
+    const { userId } = req.body;
+    if (userId) {
+        activeUsers.delete(String(userId));
+        notificados.delete(String(userId)); // Limpia para que al reingresar mande alerta si no está whitelisted
+    }
+    res.json({ success: true });
 });
 
 // Función para enviar alerta de acceso pendiente con botones de Aprobar/Denegar
@@ -91,11 +104,14 @@ async function enviarAlertaBotDiscord(userId, username) {
     }
 }
 
-// 2. Comando /quitar (Muestra la lista con botones para eliminar a cada usuario)
+// Comandos con prefijo coma (,)
 client.on('messageCreate', async message => {
-    if (message.author.bot) return;
+    if (message.author.bot || !message.content.startsWith(',')) return;
 
-    if (message.content === '/quitar') {
+    const args = message.content.slice(1).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+
+    if (command === 'quitar') {
         try {
             const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
                 headers: { 'X-Master-Key': JSONBIN_KEY }
@@ -111,7 +127,7 @@ client.on('messageCreate', async message => {
             const components = [];
             let currentRow = new ActionRowBuilder();
 
-            for (let i = 0; i < whitelist.length && i < 25; i++) { // Discord permite máximo 25 botones por mensaje
+            for (let i = 0; i < whitelist.length && i < 25; i++) {
                 const uid = String(whitelist[i]);
                 descripcion += `**${i + 1}.** UserId: \`${uid}\`\n`;
 
@@ -122,7 +138,6 @@ client.on('messageCreate', async message => {
                         .setStyle(ButtonStyle.Danger)
                 );
 
-                // Cada fila de Discord soporta máximo 5 botones
                 if (currentRow.components.length === 5 || i === whitelist.length - 1) {
                     components.push(currentRow);
                     currentRow = new ActionRowBuilder();
@@ -142,8 +157,7 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // Comando /lista (Muestra la lista limpia de texto)
-    if (message.content === '/lista') {
+    if (command === 'lista') {
         try {
             const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
                 headers: { 'X-Master-Key': JSONBIN_KEY }
@@ -172,6 +186,19 @@ client.on('messageCreate', async message => {
             message.reply("❌ Hubo un error al obtener la lista.");
         }
     }
+
+    if (command === 'solicitudes') {
+        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        const recent = approvedHistory.filter(item => item.timestamp >= thirtyDaysAgo);
+
+        const embed = new EmbedBuilder()
+            .setTitle('📋 Solicitudes Aprobadas (Últimos 30 días)')
+            .setColor(0x3498DB)
+            .setDescription(recent.length > 0 ? recent.map(r => `• UserId: \`${r.userId}\` - Aprobado por: ${r.approvedBy}`).join('\n') : 'No hay solicitudes aprobadas en este periodo.')
+            .setTimestamp();
+
+        message.reply({ embeds: [embed] });
+    }
 });
 
 // Manejador de Clics en los Botones de Discord
@@ -180,7 +207,6 @@ client.on('interactionCreate', async interaction => {
 
     const [action, userId] = interaction.customId.split('_');
 
-    // Botón para Aprobar acceso pendiente
     if (action === 'approve') {
         try {
             const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
@@ -198,6 +224,12 @@ client.on('interactionCreate', async interaction => {
             denegados.delete(userId);
             notificados.delete(userId);
 
+            approvedHistory.push({
+                userId,
+                approvedBy: interaction.user.tag,
+                timestamp: Date.now()
+            });
+
             const updatedEmbed = new EmbedBuilder()
                 .setTitle("✅ Solicitud Aprobada")
                 .setColor(0x2ECC71)
@@ -211,7 +243,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: "Hubo un error al guardar en la base de datos.", ephemeral: true });
         }
     } 
-    // Botón para Denegar acceso pendiente
     else if (action === 'deny') {
         denegados.add(userId);
         notificados.delete(userId);
@@ -226,7 +257,6 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.update({ embeds: [updatedEmbed], components: [] });
     }
-    // Botón para Eliminar usuario desde el comando /quitar
     else if (action === 'remove') {
         try {
             const binRes = await axios.get(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
