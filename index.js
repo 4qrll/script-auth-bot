@@ -35,7 +35,13 @@ app.post('/api/check-whitelist', async (req, res) => {
     const { userId, username } = req.body;
     if (!userId) return res.status(400).json({ allowed: false });
 
-    if (denegados.has(String(userId))) {
+    const stringUserId = String(userId);
+
+    // Si está denegado explícitamente, le avisamos al juego que cierre la UI una sola vez
+    if (denegados.has(stringUserId)) {
+        // Opcional: limpiamos el estado de denegado para que si vuelve a ejecutar el script en el futuro, pueda reintentar
+        denegados.delete(stringUserId);
+        notificados.delete(stringUserId);
         return res.json({ allowed: false, denied: true });
     }
 
@@ -46,19 +52,21 @@ app.post('/api/check-whitelist', async (req, res) => {
         
         const whitelist = binRes.data.record.whitelist || [];
 
-        if (whitelist.includes(Number(userId)) || whitelist.includes(String(userId))) {
-            notificados.delete(String(userId));
+        // Si está en la whitelist, se le da acceso
+        if (whitelist.includes(Number(userId)) || whitelist.includes(stringUserId)) {
+            notificados.delete(stringUserId);
+            denegados.delete(stringUserId);
             return res.json({ allowed: true });
         } else {
-            const ahora = Date.now();
-            const ultimoEnvio = notificados.get(String(userId)) || 0;
-            
-            // Si ya pasaron 12 segundos desde la última alerta de este usuario, mandamos otra y renovamos el tiempo
-            if (ahora - ultimoEnvio > 12000) {
-                notificados.set(String(userId), ahora);
-                await enviarAlertaBotDiscord(userId, username);
+            // Si ya se le envió la alerta a Discord antes, NO la volvemos a enviar (evitamos spam)
+            if (notificados.has(stringUserId)) {
+                return res.json({ allowed: false, denied: false });
             }
-            
+
+            // Marcamos como notificado y enviamos el embed a Discord UNA SOLA VEZ
+            notificados.set(stringUserId, true);
+            await enviarAlertaBotDiscord(userId, username);
+
             return res.json({ allowed: false, denied: false });
         }
     } catch (error) {
