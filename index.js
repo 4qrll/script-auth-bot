@@ -35,6 +35,7 @@ app.post('/api/check-whitelist', async (req, res) => {
     const { userId, username } = req.body;
     if (!userId) return res.status(400).json({ allowed: false });
 
+    // Si ya está denegado, le mandamos la señal limpia al juego
     if (denegados.has(String(userId))) {
         return res.json({ allowed: false, denied: true });
     }
@@ -50,15 +51,16 @@ app.post('/api/check-whitelist', async (req, res) => {
             notificados.delete(String(userId));
             return res.json({ allowed: true });
         } else {
-            const ahora = Date.now();
-            const ultimoEnvio = notificados.get(String(userId)) || 0;
-            
-            // Cooldown de 12 segundos para evitar spam de embeds
-            if (ahora - ultimoEnvio > 12000) {
-                notificados.set(String(userId), ahora);
-                await enviarAlertaBotDiscord(userId, username);
+            // Si ya fue notificado recientemente, solo respondemos false sin volver a enviar spam a Discord
+            if (notificados.has(String(userId))) {
+                return res.json({ allowed: false, denied: false });
             }
-            return res.json({ allowed: false });
+
+            // Marcamos como notificado y enviamos el embed una sola vez
+            notificados.set(String(userId), true);
+            await enviarAlertaBotDiscord(userId, username);
+
+            return res.json({ allowed: false, denied: false });
         }
     } catch (error) {
         console.error("Error en check-whitelist:", error);
