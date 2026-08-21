@@ -25,10 +25,10 @@ client.once('ready', () => {
 
 client.login(DISCORD_TOKEN);
 
-const notificados = new Set();
+// Estructuras de control
+const notificados = new Map(); // Guardará el timestamp de la última notificación por usuario
 const denegados = new Set();
-const activeUsers = new Set();
-const approvedHistory = []; // Historial para el comando de 30 días
+const approvedHistory = [];
 
 // 1. Endpoint que consulta Roblox
 app.post('/api/check-whitelist', async (req, res) => {
@@ -47,32 +47,35 @@ app.post('/api/check-whitelist', async (req, res) => {
         const whitelist = binRes.data.record.whitelist || [];
 
         if (whitelist.includes(Number(userId)) || whitelist.includes(String(userId))) {
-            activeUsers.add(String(userId));
+            notificados.delete(String(userId));
             return res.json({ allowed: true });
         } else {
-            if (!notificados.has(String(userId))) {
-                notificados.add(String(userId));
+            const ahora = Date.now();
+            const ultimoEnvio = notificados.get(String(userId)) || 0;
+            
+            // Cooldown de 12 segundos para evitar spam de embeds
+            if (ahora - ultimoEnvio > 12000) {
+                notificados.set(String(userId), ahora);
                 await enviarAlertaBotDiscord(userId, username);
             }
             return res.json({ allowed: false });
         }
     } catch (error) {
-        console.error("Error:", error);
+        console.error("Error en check-whitelist:", error);
         res.status(500).json({ allowed: false });
     }
 });
 
-// Endpoint para registrar cuando el usuario sale o presiona N
+// Endpoint cuando el usuario sale del script
 app.post('/api/leave-script', (req, res) => {
     const { userId } = req.body;
     if (userId) {
-        activeUsers.delete(String(userId));
-        notificados.delete(String(userId)); // Limpia para que al reingresar mande alerta si no está whitelisted
+        notificados.delete(String(userId));
     }
     res.json({ success: true });
 });
 
-// Función para enviar alerta de acceso pendiente con botones de Aprobar/Denegar
+// Función para enviar alerta de acceso pendiente
 async function enviarAlertaBotDiscord(userId, username) {
     try {
         const channel = await client.channels.fetch(CHANNEL_ID);
@@ -104,7 +107,7 @@ async function enviarAlertaBotDiscord(userId, username) {
     }
 }
 
-// Comandos con prefijo coma (,)
+// Comandos de Discord con prefijo coma (,)
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.content.startsWith(',')) return;
 
@@ -270,7 +273,7 @@ client.on('interactionCreate', async interaction => {
                 headers: { 'X-Master-Key': JSONBIN_KEY, 'Content-Type': 'application/json' }
             });
 
-            denegados.add(userId);
+            denegados.delete(userId);
             notificados.delete(userId);
 
             const updatedEmbed = new EmbedBuilder()
